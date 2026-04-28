@@ -1,0 +1,118 @@
+name: Verify Signed Commits
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-signed-commits-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify-signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify org-member commits are signed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG_TOKEN: ${{ secrets.ORG_MEMBERSHIP_TOKEN }}
+          REPO: ${{ github.repository }}
+          ORG: ${{ github.repository_owner }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ORG_TOKEN:-}" ]; then
+            echo "::error::ORG_MEMBERSHIP_TOKEN secret must be set." \
+              "Required to detect private org members." \
+              "Provide a token with 'read:org' / 'Members: Read'."
+            exit 1
+          fi
+
+          OWNER_TYPE=$(gh api "users/$ORG" --jq '.type' 2>/dev/null || :)
+          if [ "$OWNER_TYPE" != "Organization" ]; then
+            echo "Repository owner '$ORG' is not an organization;" \
+              "nothing to enforce."
+            exit 0
+          fi
+
+          # Compare API reports total_commits regardless of page size,
+          # so a per_page=1 request is the cheapest way to learn the
+          # size before paginating.
+          TOTAL=$(gh api \
+            "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA?per_page=1" \
+            --jq '.total_commits')
+          if [ "$TOTAL" -gt 1000 ]; then
+            echo "::error::PR contains $TOTAL commits in" \
+              "$BASE_SHA..$HEAD_SHA, exceeding the 1000-commit limit" \
+              "for this check."
+            exit 1
+          fi
+
+          COMMITS=$(gh api --paginate \
+            "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA?per_page=250" \
+            --jq '
+              .commits[]
+              | {
+                  sha: .sha,
+                  login: .committer.login,
+                  verified: .commit.verification.verified,
+                  reason: .commit.verification.reason
+                }
+            ')
+
+          UNIDENTIFIED=$(printf '%s\n' "$COMMITS" \
+            | jq -rs '.[] | select(.login == null) | .sha')
+          if [ -n "$UNIDENTIFIED" ]; then
+            echo "::error::These commits have a committer email" \
+              "that does not map to a GitHub user;" \
+              "cannot determine org membership:"
+            printf '%s\n' "$UNIDENTIFIED" | sed 's/^/  /'
+            exit 1
+          fi
+
+          UNIQUE=$(printf '%s\n' "$COMMITS" \
+            | jq -rs '[.[].login] | unique | .[]')
+          COUNT=$(printf '%s\n' "$UNIQUE" | grep -c .)
+          if [ "$COUNT" -gt 10 ]; then
+            echo "::error::PR has $COUNT unique committers," \
+              "exceeding the 10-committer limit."
+            exit 1
+          fi
+
+          ORG_MEMBERS=()
+          while IFS= read -r login; do
+            [ -z "$login" ] && continue
+            if GH_TOKEN="$ORG_TOKEN" \
+                gh api --silent "orgs/$ORG/members/$login" \
+                2>/dev/null; then
+              echo "  $login: org member (signature required)"
+              ORG_MEMBERS+=("$login")
+            else
+              echo "  $login: not an org member (signature not required)"
+            fi
+          done <<< "$UNIQUE"
+
+          FAILED=0
+          for login in "${ORG_MEMBERS[@]+"${ORG_MEMBERS[@]}"}"; do
+            bad=$(printf '%s\n' "$COMMITS" \
+              | jq -rs --arg login "$login" '
+                  .[]
+                  | select(.login == $login and .verified == false)
+                  | "\(.sha)\t\(.reason)"')
+            if [ -n "$bad" ]; then
+              echo "::error::Commits by org member '$login'" \
+                "do not have verified signatures:"
+              printf '%s\n' "$bad" | sed 's/^/  /'
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "All commits by org members in" \
+            "$BASE_SHA..$HEAD_SHA are signed and verified."
