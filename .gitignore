@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# uv / virtual environments
+.venv/
+
+# Tooling caches
+.ruff_cache/

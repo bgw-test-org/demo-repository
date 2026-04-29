@@ -1,0 +1,25 @@
+name: Verify Signed Commits
+"on":
+  pull_request_target:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-signed-commits-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify-signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify org-member commits are signed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ORG_MEMBERSHIP_READ_TOKEN: ${{ secrets.GITHUB_ORG_MEMBERSHIP_READ_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: python
+        inject-script: verify_signed_commits.py
