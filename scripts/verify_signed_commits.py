@@ -6,7 +6,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen, Request
 from urllib.parse import quote, urljoin
 
-API = "https://api.github.com"
+API_URL = "https://api.github.com/"
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 GITHUB_ORG_MEMBERSHIP_READ_TOKEN = os.environ["GITHUB_ORG_MEMBERSHIP_READ_TOKEN"]
 REPO = os.environ["REPO"]
@@ -17,13 +17,12 @@ PAGE_SIZE = 100
 
 
 def quote_segment(segment):
-    quote(segment, safe="")
+    return quote(segment, safe="")
 
-
-@contextmanager
-def gh_get(path, token=None):
+def gh_get_raw(path, token=None):
+    print(urljoin(API_URL, path))
     req = Request(
-        urljoin(url, path),
+        urljoin(API_URL, path),
         headers={
             "Authorization": f"Bearer {token or GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json",
@@ -31,8 +30,14 @@ def gh_get(path, token=None):
             "User-Agent": "vercel-labs/verify-signed-commits",
         },
     )
-    with urlopen(req) as resp:
-        yield json.loads(resp)
+    return urlopen(req)
+
+@contextmanager
+def gh_get(path, token=None):
+    with gh_get_raw(path, token) as resp:
+        body = resp.read().decode("utf-8")
+        print(resp.status, body)
+        yield json.loads(body)
 
 
 def fail(msg):
@@ -47,18 +52,9 @@ if not GITHUB_ORG_MEMBERSHIP_READ_TOKEN:
         "Provide a token with 'read:org' / 'Members: Read'."
     )
 
-try:
-    with gh_get(f"users/{quote_segment(ORG)}") as resp:
-        owner_type = resp.get("type", "")
-except HTTPError:
-    owner_type = ""
-if owner_type != "Organization":
-    print(f"Repository owner '{ORG}' is not an organization; nothing to enforce.")
-    sys.exit(0)
-
 compare_url = (
-    f"repos/{quote_segment(REPO)}/compare/"
-    + "{quote_segment(BASE_SHA)}...{quote_segment(HEAD_SHA)}"
+    f"repos/{quote(REPO)}/compare/"
+    + f"{quote_segment(BASE_SHA)}...{quote_segment(HEAD_SHA)}"
 )
 
 # Compare API reports total_commits regardless of page size,
@@ -75,11 +71,11 @@ if total > 1000:
 commits = []
 page = 1
 while True:
-    with gh_get(f"{compare_url}?per_page=100&page={page}") as resp:
+    with gh_get(f"{compare_url}?per_page={PAGE_SIZE}&page={page}") as resp:
         page_commits = resp.get("commits", [])
-    if not page_commits:
-        break
     commits.extend(page_commits)
+    if len(page_commits) < PAGE_SIZE:
+        break
     page += 1
 
 by_committer = {}
@@ -110,13 +106,9 @@ if len(by_committer) > 10:
 org_members = set()
 for login in sorted(by_committer):
     url = f"orgs/{ORG}/members/{login}"
-    try:
-        with gh_get(url, token=GITHUB_ORG_MEMBERSHIP_READ_TOKEN) as r:
-            if r.status == 204:
-                org_members.add(login)
-    except HTTPError as e:
-        if e.code != 404:
-            raise
+    with gh_get_raw(url, token=GITHUB_ORG_MEMBERSHIP_READ_TOKEN) as r:
+        if r.status == 204:
+            org_members.add(login)
     if login in org_members:
         print(f"  {login}: org member (signature required)")
     else:
