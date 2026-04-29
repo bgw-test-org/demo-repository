@@ -20,7 +20,6 @@ def quote_segment(segment):
     return quote(segment, safe="")
 
 def gh_get_raw(path, token=None):
-    print(urljoin(API_URL, path))
     req = Request(
         urljoin(API_URL, path),
         headers={
