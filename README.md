@@ -1,4 +1,19 @@
-# Welcome to your organization's demo respository
-This code repository (or "repo") is designed to demonstrate the best GitHub has to offer with the least amount of noise.
+# GitHub Action for Verifying Commit Signing
 
-The repo includes an `index.html` file (so it can render a web page), two GitHub Actions workflows, and a CSS stylesheet dependency.
+Test with:
+
+```
+GITHUB_TOKEN=$(gh auth token) \
+GITHUB_ORG_MEMBERSHIP_READ_TOKEN=$(gh auth token) \
+ORG=bgw-test-org \
+REPO=bgw-test-org/demo-repository \
+BASE_SHA=f214d5c8ce6197e1af844730bd86ce38944748d0 \
+HEAD_SHA=5cac740f91d355aae9c295336752742d440bbfa9 \
+uv run scripts/verify_signed_commits.py
+```
+
+Update workflow with:
+
+```
+uv run scripts/build_workflows.py
+```
